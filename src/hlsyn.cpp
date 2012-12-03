@@ -818,81 +818,58 @@ class Parser {
         return block;
     }
 
-    // TODO handle empty while
+    void accept(TokenType type, string name) {
+        true_or_die(t->type == type, "expected '" + name + "' but found " + t->contents);
+        t++;
+    }
+
     Statements* while_() {
         While* w = new While();
-        true_or_die(t->type == WHILE, "expected 'while' but found " + t->contents);
-        t++;
+        accept(WHILE, "while");
+        accept(L_PAREN, "(");
 
-        true_or_die(t->type == L_PAREN, "expected '(' but found " + t->contents);
-        t++;
-
-        true_or_die(t->type == VAR, "expected a variable but found " + t->contents);
         w->condition = accept_variable(INPUT);
 
-        true_or_die(t->type == R_PAREN, "expected ')' but found " + t->contents);
-        t++;
-
-        true_or_die(t->type == L_CURLY, "expected '{' but found " + t->contents);
-        t++;
+        accept(R_PAREN, ")");
+        accept(L_CURLY, "{");
 
         w->append(statements());
 
-        true_or_die(t->type == R_CURLY, "expected '}' but found " + t->contents);
-        t++;
+        accept(R_CURLY, "}");
         return w;
     }
 
     Statements* do_() {
         Do* d = new Do();
-        true_or_die(t->type == DO, "expected 'DO' but found " + t->contents);
-        t++;
-
-        true_or_die(t->type == L_CURLY, "expected '{' but found " + t->contents);
-        t++;
+        accept(DO, "do");
+        accept(L_CURLY, "{");
 
         d->append(statements());
 
-        true_or_die(t->type == R_CURLY, "expected '}' but found " + t->contents);
-        t++;
+        accept(R_CURLY, "}");
 
-        true_or_die(t->type == WHILE, "expected 'while' but found " + t->contents);
-        t++;
+        accept(WHILE, "while");
+        accept(L_PAREN, "(");
 
-        true_or_die(t->type == L_PAREN, "expected '(' but found " + t->contents);
-        t++;
-
-        true_or_die(t->type == VAR, "expected a variable but found " + t->contents);
         d->condition = accept_variable(INPUT);
 
-        true_or_die(t->type == R_PAREN, "expected ')' but found " + t->contents);
-        t++;
-
+        accept(R_PAREN, ")");
         return d;
     }
 
     Statements* if_() {
         If* i = new If();
-        true_or_die(t->type == IF, "expected 'if' but found " + t->contents);
-        t++;
+        accept(IF, "if");
+        accept(L_PAREN, "(");
 
-        true_or_die(t->type == L_PAREN, "expected '(' but found " + t->contents);
-        t++;
-
-        true_or_die(t->type == VAR, "expected a variable but found " + t->contents);
         i->condition = accept_variable(INPUT);
 
-        true_or_die(t->type == R_PAREN, "expected ')' but found " + t->contents);
-        t++;
-
-        true_or_die(t->type == L_CURLY, "expected '{' but found " + t->contents);
-        t++;
+        accept(R_PAREN, ")");
+        accept(L_CURLY, "{");
 
         i->append(statements());
 
-        true_or_die(t->type == R_CURLY, "expected '}' but found " + t->contents);
-        t++;
-
+        accept(R_CURLY, "}");
         return i;
     }
 
