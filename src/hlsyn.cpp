@@ -10,7 +10,20 @@
 #include <map>
 #include <sstream>
 #include <vector>
+#include <climits>
 using namespace std;
+
+typedef unsigned int state;
+bool DEBUG = false;
+state current_state = 0;
+state unique_state() {
+    return current_state++;
+}
+
+state current_end_state = UINT_MAX;
+state unique_end_state() {
+    return current_end_state--;
+}
 
 void true_or_die(bool constraint, string error_message) {
     if (!constraint) {
@@ -206,6 +219,9 @@ class TokenStream {
             word = split.end();
             ++(*this);
         }
+        if (DEBUG) {
+            cout << Token::from(*word) << " -> " << *word << '\n';
+        }
         return Token::from(*word);
     }
 
@@ -224,9 +240,15 @@ class TokenStream {
             if (word != split.end()) {
                 current = next_token();
             } else {
+                if (DEBUG) {
+                    cout << "NEWLINE\n";
+                }
                 current = Token::newline();
             }
         } else {
+            if (DEBUG) {
+                cout << "EOF\n";
+            }
             current = Token::eof();
         }
         return *this;
@@ -312,10 +334,26 @@ class Statements {
         }
     }
 
-    virtual void generate_fsm(ostream& os, Schedule& schedule) {
-        for (vector<Statements*>::iterator it = contents.begin();
-            it != contents.end(); ++it) {
-            (*it)->generate_fsm(os, schedule);
+    virtual void generate_fsm(ostream& os, Schedule& schedule,
+                              state start,  state end) {
+        state inner_start = start;
+        state inner_end;
+
+        if (!contents.empty()) {
+            for (vector<Statements*>::iterator it = contents.begin();
+                it != contents.end(); ++it) {
+                if (it+1 == contents.end()) {
+                    inner_end = end;
+                } else {
+                    inner_end = unique_state();
+                }
+                (*it)->generate_fsm(os, schedule, inner_start, inner_end);
+                inner_start = inner_end;
+            }
+        } else {
+            os << "        " << start << ": begin\n";
+            os << "            State <= " << end << ";\n";
+            os << "        end\n";
         }
     }
 
@@ -370,38 +408,129 @@ std::ostream& operator<< (std::ostream& os, const Expression& s) {
 class ExpressionBlock : public Statements {
   public:
     vector<Expression> expressions;
-
     ExpressionBlock() : Statements() {}
+
     ExpressionBlock(const ExpressionBlock& that) :
         Statements(), expressions(that.expressions) {}
 
     virtual Statements* statements() {
         return this;
     }
-
     void add_expression(Expression e) {
         expressions.push_back(e);
     }
-
     vector<Expression>::iterator begin() {
         return expressions.begin();
     }
-
     vector<Expression>::iterator end() {
         return expressions.end();
     }
+    virtual void generate_fsm(ostream& os, Schedule& schedule,
+                              state start,  state end) {
+        state inner_start = start;
+        state inner_end;
 
-    virtual void generate_fsm(ostream& os, Schedule& schedule) {
         vector<ExpressionBlock> scheduled_blocks = schedule(*this);
         for (vector<ExpressionBlock>::iterator block = scheduled_blocks.begin();
             block != scheduled_blocks.end(); ++block) {
-            os << "[";
+            os << "        " << inner_start << ": begin\n";
             for (vector<Expression>::iterator contents = block->begin();
                  contents != block->end(); ++contents) {
-                os << *contents << '\n';
+                os << "            " << contents->result.name << " <= ";
+                vector<Symbol>::iterator arguments = contents->arguments.begin();
+                os << arguments->name;
+                if (arguments != contents->arguments.end()) {
+                    ++arguments;
+                    if (arguments != contents->arguments.end()) {
+                        os << " ";
+                        switch (contents->op) {
+                            case PLUS:
+                                os << "+";
+                                break;
+                            case MINUS:
+                                os << "-";
+                                break;
+                            case MULT:
+                                os << "*";
+                                break;
+                            case LT:
+                                os << "<";
+                                break;
+                            case GT:
+                                os << ">";
+                                break;
+                            case EQ:
+                                os << "==";
+                                break;
+                            case QMARK:
+                                os << "?";
+                                break;
+                            case L_SHIFT:
+                                os << "<<";
+                                break;
+                            case R_SHIFT:
+                                os << ">>";
+                                break;
+                            default:
+                                true_or_die(false,
+                                     "unknown operator in generate_fsm");
+                        }
+                        os << " " << arguments->name;
+                        ++arguments;
+                        if (arguments != contents->arguments.end()) {
+                            os << " : " <<  arguments->name;
+                        }
+                    }
+                }
+                os << ";\n";
+                if (block+1 == scheduled_blocks.end()) {
+                    inner_end = end;
+                } else {
+                    inner_end = unique_state();
+                }
+                os << "            State <= "<< inner_end <<";\n";
+                os << "        end\n";
+                inner_start = inner_end;
             }
-            os << "]\n";
         }
+    }
+};
+
+class While : public Statements {
+  public:
+      Symbol condition;
+      // contents of While is Statements::statements
+};
+
+class Do : public Statements {
+  public:
+      Symbol condition;
+      // contents of Do is Statements::statements
+};
+
+class If : public Statements {
+  public:
+      Symbol condition;
+      // contents of If is Statements::statements
+
+    virtual void generate_fsm(ostream& os, Schedule& schedule, state start, state end) {
+        state inner_start = unique_state();
+        state inner_end = unique_end_state();
+
+        os << "\n        // IF STATEMENT\n";
+        os << "        " << start << ": begin\n";
+        os << "            if (" << condition.name << ") begin\n";
+        os << "                State <= " << inner_start << ";\n";
+        os << "            end else begin\n";
+        os << "                State <= " << inner_end << ";\n";
+        os << "            end\n";
+        os << "        end\n";
+
+        Statements::generate_fsm(os, schedule, inner_start, inner_end);
+
+        os << "        " << inner_end << ": begin\n";
+        os << "            State <= " << end << ";\n";
+        os << "        end // END IF STATEMENT\n\n";
     }
 };
 
@@ -421,13 +550,80 @@ class NoSchedule : public Schedule {
 
 typedef map<string, Symbol> SymbolTable;
 
+class Program {
+public:
+    Program(SymbolTable symbols, Statements* statements) :
+        symbols(symbols),
+        statements(statements) {}
+
+    void generate_fsm(ostream& os, Schedule& schedule) {
+        os << "`timescale 1ns / 1ps\n";
+        os << "module HLSM(Clk, Rst, Start, Done";
+        for (SymbolTable::iterator sym = symbols.begin();
+             sym != symbols.end(); ++sym) {
+            if (sym->second.type == INPUT || sym->second.type == OUTPUT) {
+                os << ", " << sym->first;
+            }
+        }
+        os << ");\n";
+        os << "input Clk, Rst, Start;\n";
+        os << "output reg Done;\n";
+        os << "reg[31:0] State;\n";
+        for (SymbolTable::iterator sym = symbols.begin();
+             sym != symbols.end(); ++sym) {
+            if (sym->second.type == INPUT) {
+                os << "input [31:0] " << sym->first << ";\n";
+            } else if (sym->second.type == OUTPUT) {
+                os << "output reg [31:0] " << sym->first << ";\n";
+            } else if (sym->second.type == REG) {
+                os << "reg [31:0] " << sym->first << ";\n";
+            } else {
+                os << "// NONE -> " << sym->first << ";\n";
+            }
+        }
+        os << "\nalways @(posedge Clk) begin\n";
+        os << "    if (Rst == 1) begin\n";
+        os << "        State <= 0;\n";
+                       // zero ouputs;
+        os << "    end else begin\n";
+        os << "        case (State)\n";
+        os << "        " << unique_state() << ": begin\n";
+        os << "            if (Start) begin\n";
+        os << "                State <= 1;\n";
+        os << "                Done <= 0;\n";
+        os << "            end else begin\n";
+        os << "                State <= 0;\n";
+        os << "            end\n";
+        os << "        end\n";
+
+        state end_state = unique_end_state();
+        statements->generate_fsm(os, schedule, unique_state(), end_state);
+
+        os << "        " << end_state << ": begin\n";
+        os << "            Done <= 1;\n";
+        os << "            State <= 0;\n";
+        os << "        end\n";
+        os << "        endcase\n";
+        os << "    end\n";
+        os << "end\n";
+        os << "\nendmodule\n";
+    }
+
+    ~Program() {
+        delete statements;
+    }
+
+    SymbolTable symbols;
+    Statements* statements;
+};
+
 class Parser {
   public:
     Parser(istream& in) : t(in) {};
 
-    Statements* parse_tree() {
+    Program program() {
         declarations();
-        return statements();
+        return Program(s, statements());
     }
 
   private:
@@ -488,16 +684,16 @@ class Parser {
             if (t->type == VAR) {
                 statements->append(expressions());
             } else if (t->type == WHILE) {
-                // TODO statements->append(while_(t, s));
+                statements->append(while_());
             } else if (t->type == DO) {
-                // TODO statements->append(do_(t, s));
+                statements->append(do_());
             } else if (t->type == IF) {
-                // TODO statements->append(if_(t, s));
+                statements->append(if_());
             } else {
                 break;
             }
         }
-        true_or_die(t->type == EOF_TOKEN,
+        true_or_die(t->type == EOF_TOKEN || t->type == R_CURLY,
             "invalid characters \"" + t->contents +
             "\" found in statement block");
         return statements;
@@ -545,40 +741,71 @@ class Parser {
             // result
             Expression e;
             e.result = accept_variable(OUTPUT);
-
             // =
             accept_assign();
-
             // first arg
             e.add_argument(accept_variable(INPUT));
-
             // Just an assignment
-            if (t->type == VAR || t->type == EOF_TOKEN) {
+            if (t->type == VAR
+             || t->type == IF
+             || t->type == WHILE
+             || t->type == DO
+             || t->type == EOF_TOKEN
+             || t->type == R_CURLY) {
                 e.op = ASSIGN;
                 block->add_expression(e);
                 continue;
             }
-
             // operator
             true_or_die(t->is_op(), "non-operator " + t->contents +
                     " in expression");
             e.op = t->type;
             t++;
-
             // second arg
             e.add_argument(accept_variable(INPUT));
-
             // ternary operator
             if (e.op == QMARK && t->type == COLON) {
                 t++;
-
                 // third arg
                 e.add_argument(accept_variable(INPUT));
             }
             block->add_expression(e);
         }
-
         return block;
+    }
+
+    Statements* while_() {
+        While* w =  new While();
+        return w;
+    }
+
+    Statements* do_() {
+        return new Do();
+    }
+
+    Statements* if_() {
+        If* i = new If();
+        true_or_die(t->type == IF, "expected 'if' but found " + t->contents);
+        t++;
+
+        true_or_die(t->type == L_PAREN, "expected '(' but found " + t->contents);
+        t++;
+
+        true_or_die(t->type == VAR, "expected a variable but found " + t->contents);
+        i->condition = accept_variable(INPUT);
+
+        true_or_die(t->type == R_PAREN, "expected ')' but found " + t->contents);
+        t++;
+
+        true_or_die(t->type == L_CURLY, "expected '{' but found " + t->contents);
+        t++;
+
+        i->append(statements());
+
+        true_or_die(t->type == R_CURLY, "expected '}' but found " + t->contents);
+        t++;
+
+        return i;
     }
 
     TokenStream t;
@@ -596,19 +823,12 @@ int main(int argc, char** argv) {
     true_or_die(c_file.is_open(), "the c file could not be opened");
 
     Parser p(c_file);
-    Statements* tree = p.parse_tree();
+    Program program = p.program();
     c_file.close();
 
     NoSchedule no_schedule;
-    tree->generate_fsm(cout, no_schedule);
-    delete tree;
+    program.generate_fsm(cout, no_schedule);
 
-    /*
-    for (SymbolTable::iterator it = s.begin();
-         it != s.end(); ++it) {
-        cout << it->first << " " << it->second << '\n';
-    }
-    */
 	return 0;
 }
 
