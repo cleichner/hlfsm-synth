@@ -13,15 +13,16 @@
 #include <climits>
 using namespace std;
 
-typedef unsigned int state;
 bool DEBUG = false;
-state current_state = 0;
+
+typedef unsigned int state;
 state unique_state() {
+    static state current_state = 0;
     return current_state++;
 }
 
-state current_end_state = UINT_MAX;
 state unique_end_state() {
+    static state current_end_state = UINT_MAX;
     return current_end_state--;
 }
 
@@ -498,19 +499,39 @@ class ExpressionBlock : public Statements {
 
 class While : public Statements {
   public:
-      Symbol condition;
+    Symbol condition;
       // contents of While is Statements::statements
+
+    virtual void generate_fsm(ostream& os, Schedule& schedule, state start, state end) {
+        state inner_start = unique_state();
+        state inner_end = unique_end_state();
+
+        os << "\n        // WHILE STATEMENT\n";
+        os << "        " << start << ": begin\n";
+        os << "            if (" << condition.name << ") begin\n";
+        os << "                State <= " << inner_start << ";\n";
+        os << "            end else begin\n";
+        os << "                State <= " << end << ";\n";
+        os << "            end\n";
+        os << "        end\n";
+
+        Statements::generate_fsm(os, schedule, inner_start, inner_end);
+
+        os << "        " << inner_end << ": begin\n";
+        os << "            State <= " << start << ";\n";
+        os << "        end // END WHILE STATEMENT\n\n";
+    }
 };
 
 class Do : public Statements {
   public:
-      Symbol condition;
+    Symbol condition;
       // contents of Do is Statements::statements
 };
 
 class If : public Statements {
   public:
-      Symbol condition;
+    Symbol condition;
       // contents of If is Statements::statements
 
     virtual void generate_fsm(ostream& os, Schedule& schedule, state start, state end) {
@@ -584,7 +605,13 @@ public:
         os << "\nalways @(posedge Clk) begin\n";
         os << "    if (Rst == 1) begin\n";
         os << "        State <= 0;\n";
-                       // zero ouputs;
+        // zero ouputs;
+        for (SymbolTable::iterator sym = symbols.begin();
+             sym != symbols.end(); ++sym) {
+            if (sym->second.type == OUTPUT || sym->second.type == REG) {
+                os << "        " << sym->first << " <= 0;\n";
+            }
+        }
         os << "    end else begin\n";
         os << "        case (State)\n";
         os << "        " << unique_state() << ": begin\n";
@@ -751,6 +778,7 @@ class Parser {
              || t->type == WHILE
              || t->type == DO
              || t->type == EOF_TOKEN
+             || t->type == NEWLINE
              || t->type == R_CURLY) {
                 e.op = ASSIGN;
                 block->add_expression(e);
@@ -774,8 +802,28 @@ class Parser {
         return block;
     }
 
+    // TODO handle empty while
     Statements* while_() {
         While* w =  new While();
+        true_or_die(t->type == WHILE, "expected 'while' but found " + t->contents);
+        t++;
+
+        true_or_die(t->type == L_PAREN, "expected '(' but found " + t->contents);
+        t++;
+
+        true_or_die(t->type == VAR, "expected a variable but found " + t->contents);
+        w->condition = accept_variable(INPUT);
+
+        true_or_die(t->type == R_PAREN, "expected ')' but found " + t->contents);
+        t++;
+
+        true_or_die(t->type == L_CURLY, "expected '{' but found " + t->contents);
+        t++;
+
+        w->append(statements());
+
+        true_or_die(t->type == R_CURLY, "expected '}' but found " + t->contents);
+        t++;
         return w;
     }
 
