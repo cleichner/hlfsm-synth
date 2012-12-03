@@ -499,8 +499,7 @@ class ExpressionBlock : public Statements {
 
 class While : public Statements {
   public:
-    Symbol condition;
-      // contents of While is Statements::statements
+    Symbol condition; // contents of While is Statements::statements
 
     virtual void generate_fsm(ostream& os, Schedule& schedule, state start, state end) {
         state inner_start = unique_state();
@@ -525,14 +524,32 @@ class While : public Statements {
 
 class Do : public Statements {
   public:
-    Symbol condition;
-      // contents of Do is Statements::statements
+    Symbol condition; // contents of Do is Statements::statements
+
+    virtual void generate_fsm(ostream& os, Schedule& schedule, state start, state end) {
+        state inner_start = unique_state();
+        state inner_end = unique_end_state();
+
+        os << "\n        // DO-WHILE STATEMENT\n";
+        os << "        " << start << ": begin\n";
+        os << "            State <= " << inner_start << ";\n";
+        os << "        end\n";
+
+        Statements::generate_fsm(os, schedule, inner_start, inner_end);
+
+        os << "        " << inner_end << ": begin\n";
+        os << "            if (" << condition.name << ") begin\n";
+        os << "                State <= " << start << ";\n";
+        os << "            end else begin\n";
+        os << "                State <= " << end << ";\n";
+        os << "            end\n";
+        os << "        end // END DO-WHILE STATEMENT\n\n";
+    }
 };
 
 class If : public Statements {
   public:
-    Symbol condition;
-      // contents of If is Statements::statements
+    Symbol condition; // contents of If is Statements::statements
 
     virtual void generate_fsm(ostream& os, Schedule& schedule, state start, state end) {
         state inner_start = unique_state();
@@ -605,7 +622,6 @@ public:
         os << "\nalways @(posedge Clk) begin\n";
         os << "    if (Rst == 1) begin\n";
         os << "        State <= 0;\n";
-        // zero ouputs;
         for (SymbolTable::iterator sym = symbols.begin();
              sym != symbols.end(); ++sym) {
             if (sym->second.type == OUTPUT || sym->second.type == REG) {
@@ -804,7 +820,7 @@ class Parser {
 
     // TODO handle empty while
     Statements* while_() {
-        While* w =  new While();
+        While* w = new While();
         true_or_die(t->type == WHILE, "expected 'while' but found " + t->contents);
         t++;
 
@@ -828,7 +844,31 @@ class Parser {
     }
 
     Statements* do_() {
-        return new Do();
+        Do* d = new Do();
+        true_or_die(t->type == DO, "expected 'DO' but found " + t->contents);
+        t++;
+
+        true_or_die(t->type == L_CURLY, "expected '{' but found " + t->contents);
+        t++;
+
+        d->append(statements());
+
+        true_or_die(t->type == R_CURLY, "expected '}' but found " + t->contents);
+        t++;
+
+        true_or_die(t->type == WHILE, "expected 'while' but found " + t->contents);
+        t++;
+
+        true_or_die(t->type == L_PAREN, "expected '(' but found " + t->contents);
+        t++;
+
+        true_or_die(t->type == VAR, "expected a variable but found " + t->contents);
+        d->condition = accept_variable(INPUT);
+
+        true_or_die(t->type == R_PAREN, "expected ')' but found " + t->contents);
+        t++;
+
+        return d;
     }
 
     Statements* if_() {
