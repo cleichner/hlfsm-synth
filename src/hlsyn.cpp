@@ -686,7 +686,7 @@ class Parser {
                 return false;
             }
 
-            p->accept_colon();
+            p->accept(COLON, ":");
 
             while (t->type == VAR) {
                 true_or_die(s.find(t->contents) == s.end(),
@@ -764,15 +764,8 @@ class Parser {
         }
     }
 
-    void accept_colon() {
-        true_or_die(t->type == COLON,
-                "expected colon but found " + t->contents);
-        t++;
-    }
-
-    void accept_assign() {
-        true_or_die(t->type == ASSIGN,
-                "expected assignment but found " + t->contents);
+    void accept(TokenType type, string name) {
+        true_or_die(t->type == type, "expected '" + name + "' but found " + t->contents);
         t++;
     }
 
@@ -784,10 +777,12 @@ class Parser {
             // result
             Expression e;
             e.result = accept_variable(OUTPUT);
-            // =
-            accept_assign();
+
+            accept(ASSIGN, "assignment");
+
             // first arg
             e.add_argument(accept_variable(INPUT));
+
             // Just an assignment
             if (t->type == VAR
              || t->type == IF
@@ -800,13 +795,16 @@ class Parser {
                 block->add_expression(e);
                 continue;
             }
+
             // operator
             true_or_die(t->is_op(), "non-operator " + t->contents +
                     " in expression");
             e.op = t->type;
             t++;
+
             // second arg
             e.add_argument(accept_variable(INPUT));
+
             // ternary operator
             if (e.op == QMARK && t->type == COLON) {
                 t++;
@@ -816,11 +814,6 @@ class Parser {
             block->add_expression(e);
         }
         return block;
-    }
-
-    void accept(TokenType type, string name) {
-        true_or_die(t->type == type, "expected '" + name + "' but found " + t->contents);
-        t++;
     }
 
     Statements* while_() {
