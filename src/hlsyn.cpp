@@ -335,7 +335,7 @@ class Statements {
         }
     }
 
-    virtual void generate_fsm(ostream& os, Schedule& schedule,
+    virtual void generate_fsm(ostream& os, Schedule* schedule,
                               state start,  state end) {
         state inner_start = start;
         state inner_end;
@@ -426,12 +426,12 @@ class ExpressionBlock : public Statements {
     vector<Expression>::iterator end() {
         return expressions.end();
     }
-    virtual void generate_fsm(ostream& os, Schedule& schedule,
+    virtual void generate_fsm(ostream& os, Schedule* schedule,
                               state start,  state end) {
         state inner_start = start;
         state inner_end;
 
-        vector<ExpressionBlock> scheduled_blocks = schedule(*this);
+        vector<ExpressionBlock> scheduled_blocks = (*schedule)(*this);
         for (vector<ExpressionBlock>::iterator block = scheduled_blocks.begin();
             block != scheduled_blocks.end(); ++block) {
             os << "        " << inner_start << ": begin\n";
@@ -501,7 +501,7 @@ class While : public Statements {
   public:
     Symbol condition; // contents of While is Statements::statements
 
-    virtual void generate_fsm(ostream& os, Schedule& schedule, state start, state end) {
+    virtual void generate_fsm(ostream& os, Schedule* schedule, state start, state end) {
         state inner_start = unique_state();
         state inner_end = unique_end_state();
 
@@ -526,7 +526,7 @@ class Do : public Statements {
   public:
     Symbol condition; // contents of Do is Statements::statements
 
-    virtual void generate_fsm(ostream& os, Schedule& schedule, state start, state end) {
+    virtual void generate_fsm(ostream& os, Schedule* schedule, state start, state end) {
         state inner_start = unique_state();
         state inner_end = unique_end_state();
 
@@ -551,7 +551,7 @@ class If : public Statements {
   public:
     Symbol condition; // contents of If is Statements::statements
 
-    virtual void generate_fsm(ostream& os, Schedule& schedule, state start, state end) {
+    virtual void generate_fsm(ostream& os, Schedule* schedule, state start, state end) {
         state inner_start = unique_state();
         state inner_end = unique_end_state();
 
@@ -586,6 +586,20 @@ class NoSchedule : public Schedule {
     }
 };
 
+class ForceDirectedSchedule : public Schedule {
+  public:
+    virtual vector<ExpressionBlock> operator()(ExpressionBlock e) {
+        vector<ExpressionBlock> scheduled_blocks;
+        for (vector<Expression>::iterator it = e.begin();
+            it != e.end(); ++it) {
+            ExpressionBlock block;
+            block.add_expression(*it);
+            scheduled_blocks.push_back(block);
+        }
+        return scheduled_blocks;
+    }
+};
+
 typedef map<string, Symbol> SymbolTable;
 
 class Program {
@@ -594,7 +608,7 @@ public:
         symbols(symbols),
         statements(statements) {}
 
-    void generate_fsm(ostream& os, Schedule& schedule) {
+    void generate_fsm(ostream& os, Schedule* schedule) {
         os << "`timescale 1ns / 1ps\n";
         os << "module HLSM(Clk, Rst, Start, Done";
         for (SymbolTable::iterator sym = symbols.begin();
@@ -884,8 +898,9 @@ int main(int argc, char** argv) {
     Program program = p.program();
     c_file.close();
 
-    NoSchedule no_schedule;
-    program.generate_fsm(cout, no_schedule);
+    Schedule* schedule = new NoSchedule();
+    program.generate_fsm(cout, schedule);
+    delete schedule;
 
 	return 0;
 }
