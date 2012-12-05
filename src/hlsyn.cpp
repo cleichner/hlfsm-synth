@@ -382,6 +382,46 @@ class Expression {
     void add_argument(Symbol s) {
         arguments.push_back(s);
     }
+
+    bool operator<(Expression other) const {
+        if (result.name < other.result.name) {
+            return true;
+        } else if (result.name == other.result.name) {
+            // if the result is the same, compare the arguments
+            vector<Symbol>::const_iterator o_it = other.arguments.begin();
+            vector<Symbol>::const_iterator o_end = other.arguments.end();
+
+            for (vector<Symbol>::const_iterator it = arguments.begin();
+                 it != arguments.end(); ++it) {
+                // other expression is shorter
+                if (o_it == o_end) {
+                    return false;
+                }
+
+                if (it->name < o_it->name) {
+                    return true;
+                }
+
+                if (o_it != o_end) {
+                    ++o_it;
+                }
+            }
+
+            // this expression has fewer arguments
+            if (o_it != o_end) {
+                return true;
+            }
+
+            // compare on operator
+            if (op < other.op) {
+                return true;
+            }
+
+            return false;
+        } else {
+            return false;
+        }
+    };
 };
 
 std::ostream& operator<< (std::ostream& os, const Expression& s) {
@@ -430,6 +470,12 @@ class ExpressionBlock : public Statements {
     vector<Expression>::iterator end() {
         return expressions.end();
     }
+    vector<Expression>::reverse_iterator rbegin() {
+        return expressions.rbegin();
+    }
+    vector<Expression>::reverse_iterator rend() {
+        return expressions.rend();
+    }
     virtual void generate_fsm(SymbolTable symbols, ostream& os, Schedule* schedule,
                               state start,  state end) {
         state inner_start = start;
@@ -471,15 +517,15 @@ class ExpressionBlock : public Statements {
                     }
                 }
                 os << ";\n";
-                if (block+1 == scheduled_blocks.end()) {
-                    inner_end = end;
-                } else {
-                    inner_end = unique_state();
-                }
-                os << "            State <= "<< inner_end <<";\n";
-                os << "        end\n";
-                inner_start = inner_end;
             }
+            if (block+1 == scheduled_blocks.end()) {
+                inner_end = end;
+            } else {
+                inner_end = unique_state();
+            }
+            os << "            State <= "<< inner_end <<";\n";
+            os << "        end\n";
+            inner_start = inner_end;
         }
         os << '\n';
     }
@@ -578,24 +624,90 @@ typedef int Time;
 
 class ASAPSchedule : public Schedule {
   public:
-    //virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable symbols) {
-    virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable ) {
-        /* ASAP(G) {
-         * schedule v_0 by setting t_0 = 1
-         * repeat {
-         *    select vertex v_i whose predecessors are all scheduled
-         *    schedule by setting t_i = max(t_pred) + 1
-         * } until (v_end is scheduled)
-         * return t
-         * }
-         */
-         for (vector<Expression>::iterator expression = e.begin();
-              expression != e.end(); ++expression) {
-
-         }
-         map<Expression, Time> t;
+    map<Expression, set<Expression> > predecessors_from_expression_block(ExpressionBlock e) {
          map<Expression, set<Expression> > pred;
-         return vector<ExpressionBlock>();
+         for (vector<Expression>::reverse_iterator expression = e.rbegin();
+              expression != e.rend(); ++expression) {
+            pred[*expression] = set<Expression>();
+            for (vector<Symbol>::iterator arg = expression->arguments.begin();
+                 arg != expression->arguments.end(); ++arg) {
+                true_or_die(expression->result.name != arg->name,
+                            "self-reference in expression!");
+                for (vector<Expression>::reverse_iterator dep = expression;
+                    dep != e.rend(); ++dep) {
+                    if (arg->name == dep->result.name) {
+                        pred[*expression].insert(*dep);
+                    }
+                }
+            }
+         }
+         return pred;
+    }
+
+    vector<ExpressionBlock> sequence_to_expression_blocks(
+        map<Expression, Time> sequence) {
+        bool still_adding = true;
+        vector<ExpressionBlock> scheduled_expressions;
+        Time t = 1;
+        while (still_adding) {
+            still_adding = false;
+            ExpressionBlock e;
+            for (map<Expression, Time>::iterator it = sequence.begin();
+                it != sequence.end(); ++it) {
+                if (it->second == t) {
+                    e.add_expression(it->first);
+                    still_adding = true;
+                }
+            }
+            if (still_adding) {
+                scheduled_expressions.push_back(e);
+            }
+            t++;
+        }
+        return scheduled_expressions;
+    }
+
+    virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable) {
+        // Make predecessor table
+        map<Expression, set<Expression> > pred =
+        predecessors_from_expression_block(e);
+
+        // maps expressions to the time they are scheduled in
+        map<Expression, Time> sequence;
+
+        bool all_scheduled = false;
+        while (!all_scheduled) {
+            all_scheduled = true;
+
+            // select expression with all predecessors scheduled and schedule it
+            for (map<Expression, set<Expression> >::iterator it = pred.begin();
+                it != pred.end(); ++it) {
+                Expression expression = it->first;
+                set<Expression> predecessors = it->second;
+
+                // check if all predecessors have been scheduled
+                bool all_pred_scheduled = true;
+                Time max_pred_time = 0;
+                for (set<Expression>::iterator pred = predecessors.begin();
+                    pred != predecessors.end(); ++pred) {
+                    if (sequence.find(*pred) == sequence.end()) {
+                        all_scheduled = false;
+                        all_pred_scheduled = false;
+                    } else {
+                        max_pred_time = max(max_pred_time,
+                                        sequence.find(*pred)->second);
+                    }
+                }
+
+                // if all predecessors are scheduled, this expression can be
+                // scheduled
+                if (all_pred_scheduled) {
+                    sequence[expression] = max_pred_time + 1;
+                }
+            }
+        }
+
+        return sequence_to_expression_blocks(sequence);
     }
 };
 
@@ -928,6 +1040,8 @@ int main(int argc, char** argv) {
         // TODO add latency support!
         schedule = new ForceDirectedSchedule(20);
     }
+    delete schedule;
+    schedule = new ASAPSchedule();
 
     string verilog_name(argv[3]);
     fstream c_file(argv[2]);
