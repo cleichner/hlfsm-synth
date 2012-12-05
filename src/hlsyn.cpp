@@ -17,7 +17,7 @@ using namespace std;
 class Symbol;
 typedef map<string, Symbol> SymbolTable;
 
-bool DEBUG = true;
+bool DEBUG = false;
 
 typedef unsigned int state;
 state unique_state() {
@@ -579,7 +579,7 @@ typedef int Time;
 class ASAPSchedule : public Schedule {
   public:
     //virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable symbols) {
-    virtual vector<ExpressionBlock> operator()(ExpressionBlock, SymbolTable) {
+    virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable ) {
         /* ASAP(G) {
          * schedule v_0 by setting t_0 = 1
          * repeat {
@@ -589,8 +589,8 @@ class ASAPSchedule : public Schedule {
          * return t
          * }
          */
-         for (ExpressionBlock::iterator expression = e.begin();
-              expression != e.end(); ++e) {
+         for (vector<Expression>::iterator expression = e.begin();
+              expression != e.end(); ++expression) {
 
          }
          map<Expression, Time> t;
