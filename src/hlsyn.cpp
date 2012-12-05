@@ -721,7 +721,7 @@ class ALAPSchedule : public Schedule {
          for (vector<Expression>::iterator expression = e.begin();
               expression != e.end(); ++expression) {
             succ[*expression] = set<Expression>();
-            for (vector<Expression>::iterator dep = expression+1;
+            for (vector<Expression>::iterator dep = expression + 1;
                 dep != e.end(); ++dep) {
 
                 // the result of this expression got assigned to again, no more
@@ -805,6 +805,7 @@ class ALAPSchedule : public Schedule {
     }
 };
 
+// Minimum resource under latency constraint
 class ForceDirectedSchedule : public Schedule {
   public:
     // resources: multiplier, adder/subtractor, logic/logical
@@ -1135,7 +1136,7 @@ int main(int argc, char** argv) {
     }
     delete schedule;
     //schedule = new ASAPSchedule();
-    schedule = new ALAPSchedule(4);
+    schedule = new ALAPSchedule(6);
 
     string verilog_name(argv[3]);
     fstream c_file(argv[2]);
