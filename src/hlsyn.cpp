@@ -670,7 +670,7 @@ class ASAPSchedule : public Schedule {
     virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable) {
         // Make predecessor table
         map<Expression, set<Expression> > pred =
-        predecessors_from_expression_block(e);
+            predecessors_from_expression_block(e);
 
         // maps expressions to the time they are scheduled in
         map<Expression, Time> sequence;
@@ -711,11 +711,49 @@ class ASAPSchedule : public Schedule {
     }
 };
 
+class ALAPSchedule : public Schedule {
+  public:
+    Time latency;
+    ALAPSchedule(Time latency) : latency(latency) {}
+
+    map<Expression, set<Expression> > successors_from_expression_block(ExpressionBlock e) {
+         map<Expression, set<Expression> > succ;
+         for (vector<Expression>::iterator expression = e.begin();
+              expression != e.end(); ++expression) {
+            pred[*expression] = set<Expression>();
+            for (vector<Symbol>::iterator arg = expression->arguments.begin();
+                 arg != expression->arguments.end(); ++arg) {
+                true_or_die(expression->result.name != arg->name,
+                            "self-reference in expression!");
+                for (vector<Expression>::reverse_iterator dep = expression;
+                    dep != e.rend(); ++dep) {
+                    if (arg->name == dep->result.name) {
+                        pred[*expression].insert(*dep);
+                    }
+                }
+            }
+         }
+         return pred;
+    }
+
+    virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable) {
+        // schedule all nodes with no successors at t = latency;
+        // repeat {
+        // select a vertex whose successors are all scheduled
+        // shedule that vertex by setting it's time = min(t_succ) - 1
+        // } until (all nodes have been scheduled)
+
+        // make successor table
+        map<Expression, set<Expression> > pred =
+            successors_from_expression_block(e);
+    }
+};
+
 class ForceDirectedSchedule : public Schedule {
   public:
     // resources: multiplier, adder/subtractor, logic/logical
-    int latency;
-    ForceDirectedSchedule(int latency) : latency(latency) {}
+    Time latency;
+    ForceDirectedSchedule(Time latency) : latency(latency) {}
 
     virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable) {
         vector<ExpressionBlock> scheduled_blocks;
@@ -1027,11 +1065,11 @@ class Parser {
 };
 
 int main(int argc, char** argv) {
-	if (argc != 4 && argc != 5) {
-		cerr << '\n' << "Usage: " << argv[0] <<
+    if (argc != 4 && argc != 5) {
+        cerr << '\n' << "Usage: " << argv[0] <<
             " -ns cfile verilogfile OR -fd cfile verilogfile latency\n\n";
-		return -1;
-	}
+        return -1;
+    }
 
     Schedule* schedule;
     if (string(argv[1]) == "-ns") {
@@ -1054,6 +1092,6 @@ int main(int argc, char** argv) {
     program.generate_fsm(cout, schedule);
     delete schedule;
 
-	return 0;
+    return 0;
 }
 
