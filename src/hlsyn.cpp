@@ -720,32 +720,88 @@ class ALAPSchedule : public Schedule {
          map<Expression, set<Expression> > succ;
          for (vector<Expression>::iterator expression = e.begin();
               expression != e.end(); ++expression) {
-            pred[*expression] = set<Expression>();
-            for (vector<Symbol>::iterator arg = expression->arguments.begin();
-                 arg != expression->arguments.end(); ++arg) {
-                true_or_die(expression->result.name != arg->name,
-                            "self-reference in expression!");
-                for (vector<Expression>::reverse_iterator dep = expression;
-                    dep != e.rend(); ++dep) {
-                    if (arg->name == dep->result.name) {
-                        pred[*expression].insert(*dep);
+            succ[*expression] = set<Expression>();
+            for (vector<Expression>::iterator dep = expression+1;
+                dep != e.end(); ++dep) {
+
+                // the result of this expression got assigned to again, no more
+                // successors for this expression
+                if (expression->result.name == dep->result.name) {
+                    break;
+                }
+
+                for (vector<Symbol>::iterator arg = dep->arguments.begin();
+                     arg != dep->arguments.end(); ++arg) {
+                    if (expression->result.name == arg->name) {
+                        succ[*expression].insert(*dep);
                     }
                 }
             }
          }
-         return pred;
+         return succ;
+    }
+
+    // DIFFERENT FROM THE ONE THAT ASAP USES, LATENCY AWARE!
+    vector<ExpressionBlock> sequence_to_expression_blocks(
+        map<Expression, Time> sequence) {
+        vector<ExpressionBlock> scheduled_expressions;
+        for (Time t = latency; t > 0; t--) {
+            ExpressionBlock e;
+            for (map<Expression, Time>::iterator it = sequence.begin();
+                it != sequence.end(); ++it) {
+                if (it->second == t) {
+                    e.add_expression(it->first);
+                }
+            }
+            scheduled_expressions.push_back(e);
+        }
+        return vector<ExpressionBlock>(scheduled_expressions.rbegin(),
+                                       scheduled_expressions.rend());
     }
 
     virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable) {
-        // schedule all nodes with no successors at t = latency;
-        // repeat {
-        // select a vertex whose successors are all scheduled
-        // shedule that vertex by setting it's time = min(t_succ) - 1
-        // } until (all nodes have been scheduled)
-
-        // make successor table
-        map<Expression, set<Expression> > pred =
+        map<Expression, set<Expression> > succ =
             successors_from_expression_block(e);
+
+        // maps expressions to the time they are scheduled in
+        map<Expression, Time> sequence;
+
+        bool all_scheduled = false;
+        while (!all_scheduled) {
+            all_scheduled = true;
+
+            // select expression with all successors scheduled and schedule it
+            for (map<Expression, set<Expression> >::iterator it = succ.begin();
+                it != succ.end(); ++it) {
+                Expression expression = it->first;
+                set<Expression> successors = it->second;
+
+                // check if all successors have been scheduled
+                bool all_succ_scheduled = true;
+                Time min_succ_time = latency + 1;
+                for (set<Expression>::iterator succ = successors.begin();
+                    succ != successors.end(); ++succ) {
+                    if (sequence.find(*succ) == sequence.end()) {
+                        all_scheduled = false;
+                        all_succ_scheduled = false;
+                    } else {
+                        min_succ_time = min(min_succ_time,
+                                        sequence.find(*succ)->second);
+                    }
+                }
+
+                true_or_die((min_succ_time - 1) >= 1,
+                            "ALAP cannot meet latency requirements");
+
+                // if all successors are scheduled, this expression can be
+                // scheduled
+                if (all_succ_scheduled) {
+                    sequence[expression] = min_succ_time - 1;
+                }
+            }
+        }
+
+        return sequence_to_expression_blocks(sequence);
     }
 };
 
@@ -758,8 +814,7 @@ class ForceDirectedSchedule : public Schedule {
     virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable) {
         vector<ExpressionBlock> scheduled_blocks;
         // repeat {
-            // compute the time frames;
-                // timeframes are [ASAP, ALAP];
+            // compute the time frames; // timeframes are [ASAP, ALAP];
             // compute the operations and type probabilities
             // compute the self-forces, predecessor/successor forces and total forces;
             // schedule the operation with least force and update its time-frame;
@@ -1079,7 +1134,8 @@ int main(int argc, char** argv) {
         schedule = new ForceDirectedSchedule(20);
     }
     delete schedule;
-    schedule = new ASAPSchedule();
+    //schedule = new ASAPSchedule();
+    schedule = new ALAPSchedule(4);
 
     string verilog_name(argv[3]);
     fstream c_file(argv[2]);
