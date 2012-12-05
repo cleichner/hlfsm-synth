@@ -8,12 +8,16 @@
 #include <iostream>
 #include <iterator>
 #include <map>
+#include <set>
 #include <sstream>
 #include <vector>
 #include <climits>
 using namespace std;
 
-bool DEBUG = false;
+class Symbol;
+typedef map<string, Symbol> SymbolTable;
+
+bool DEBUG = true;
 
 typedef unsigned int state;
 state unique_state() {
@@ -318,7 +322,7 @@ class ExpressionBlock;
 // Base policy for scheduling blocks of arithmatic expressions
 class Schedule {
   public:
-    virtual vector<ExpressionBlock> operator()(ExpressionBlock) = 0;
+    virtual vector<ExpressionBlock> operator()(ExpressionBlock, SymbolTable) = 0;
     virtual ~Schedule() {};
 };
 
@@ -335,7 +339,7 @@ class Statements {
         }
     }
 
-    virtual void generate_fsm(ostream& os, Schedule* schedule,
+    virtual void generate_fsm(SymbolTable symbols, ostream& os, Schedule* schedule,
                               state start,  state end) {
         state inner_start = start;
         state inner_end;
@@ -348,7 +352,7 @@ class Statements {
                 } else {
                     inner_end = unique_state();
                 }
-                (*it)->generate_fsm(os, schedule, inner_start, inner_end);
+                (*it)->generate_fsm(symbols, os, schedule, inner_start, inner_end);
                 inner_start = inner_end;
             }
         } else {
@@ -426,12 +430,13 @@ class ExpressionBlock : public Statements {
     vector<Expression>::iterator end() {
         return expressions.end();
     }
-    virtual void generate_fsm(ostream& os, Schedule* schedule,
+    virtual void generate_fsm(SymbolTable symbols, ostream& os, Schedule* schedule,
                               state start,  state end) {
         state inner_start = start;
         state inner_end;
 
-        vector<ExpressionBlock> scheduled_blocks = (*schedule)(*this);
+        os << "\n        // STATEMENTS\n";
+        vector<ExpressionBlock> scheduled_blocks = (*schedule)(*this, symbols);
         for (vector<ExpressionBlock>::iterator block = scheduled_blocks.begin();
             block != scheduled_blocks.end(); ++block) {
             os << "        " << inner_start << ": begin\n";
@@ -445,33 +450,15 @@ class ExpressionBlock : public Statements {
                     if (arguments != contents->arguments.end()) {
                         os << " ";
                         switch (contents->op) {
-                            case PLUS:
-                                os << "+";
-                                break;
-                            case MINUS:
-                                os << "-";
-                                break;
-                            case MULT:
-                                os << "*";
-                                break;
-                            case LT:
-                                os << "<";
-                                break;
-                            case GT:
-                                os << ">";
-                                break;
-                            case EQ:
-                                os << "==";
-                                break;
-                            case QMARK:
-                                os << "?";
-                                break;
-                            case L_SHIFT:
-                                os << "<<";
-                                break;
-                            case R_SHIFT:
-                                os << ">>";
-                                break;
+                            case PLUS: os << "+"; break;
+                            case MINUS: os << "-"; break;
+                            case MULT: os << "*"; break;
+                            case LT: os << "<"; break;
+                            case GT: os << ">"; break;
+                            case EQ: os << "=="; break;
+                            case QMARK: os << "?"; break;
+                            case L_SHIFT: os << "<<"; break;
+                            case R_SHIFT: os << ">>"; break;
                             default:
                                 true_or_die(false,
                                      "unknown operator in generate_fsm");
@@ -494,6 +481,7 @@ class ExpressionBlock : public Statements {
                 inner_start = inner_end;
             }
         }
+        os << '\n';
     }
 };
 
@@ -501,7 +489,7 @@ class While : public Statements {
   public:
     Symbol condition; // contents of While is Statements::statements
 
-    virtual void generate_fsm(ostream& os, Schedule* schedule, state start, state end) {
+    virtual void generate_fsm(SymbolTable symbols, ostream& os, Schedule* schedule, state start, state end) {
         state inner_start = unique_state();
         state inner_end = unique_end_state();
 
@@ -514,7 +502,7 @@ class While : public Statements {
         os << "            end\n";
         os << "        end\n";
 
-        Statements::generate_fsm(os, schedule, inner_start, inner_end);
+        Statements::generate_fsm(symbols, os, schedule, inner_start, inner_end);
 
         os << "        " << inner_end << ": begin\n";
         os << "            State <= " << start << ";\n";
@@ -526,7 +514,7 @@ class Do : public Statements {
   public:
     Symbol condition; // contents of Do is Statements::statements
 
-    virtual void generate_fsm(ostream& os, Schedule* schedule, state start, state end) {
+    virtual void generate_fsm(SymbolTable symbols, ostream& os, Schedule* schedule, state start, state end) {
         state inner_start = unique_state();
         state inner_end = unique_end_state();
 
@@ -535,7 +523,7 @@ class Do : public Statements {
         os << "            State <= " << inner_start << ";\n";
         os << "        end\n";
 
-        Statements::generate_fsm(os, schedule, inner_start, inner_end);
+        Statements::generate_fsm(symbols, os, schedule, inner_start, inner_end);
 
         os << "        " << inner_end << ": begin\n";
         os << "            if (" << condition.name << ") begin\n";
@@ -551,7 +539,7 @@ class If : public Statements {
   public:
     Symbol condition; // contents of If is Statements::statements
 
-    virtual void generate_fsm(ostream& os, Schedule* schedule, state start, state end) {
+    virtual void generate_fsm(SymbolTable symbols, ostream& os, Schedule* schedule, state start, state end) {
         state inner_start = unique_state();
         state inner_end = unique_end_state();
 
@@ -564,7 +552,7 @@ class If : public Statements {
         os << "            end\n";
         os << "        end\n";
 
-        Statements::generate_fsm(os, schedule, inner_start, inner_end);
+        Statements::generate_fsm(symbols, os, schedule, inner_start, inner_end);
 
         os << "        " << inner_end << ": begin\n";
         os << "            State <= " << end << ";\n";
@@ -574,7 +562,7 @@ class If : public Statements {
 
 class NoSchedule : public Schedule {
   public:
-    virtual vector<ExpressionBlock> operator()(ExpressionBlock e) {
+    virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable) {
         vector<ExpressionBlock> scheduled_blocks;
         for (vector<Expression>::iterator it = e.begin();
             it != e.end(); ++it) {
@@ -583,13 +571,49 @@ class NoSchedule : public Schedule {
             scheduled_blocks.push_back(block);
         }
         return scheduled_blocks;
+    }
+};
+
+typedef int Time;
+
+class ASAPSchedule : public Schedule {
+  public:
+    //virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable symbols) {
+    virtual vector<ExpressionBlock> operator()(ExpressionBlock, SymbolTable) {
+        /* ASAP(G) {
+         * schedule v_0 by setting t_0 = 1
+         * repeat {
+         *    select vertex v_i whose predecessors are all scheduled
+         *    schedule by setting t_i = max(t_pred) + 1
+         * } until (v_end is scheduled)
+         * return t
+         * }
+         */
+         for (ExpressionBlock::iterator expression = e.begin();
+              expression != e.end(); ++e) {
+
+         }
+         map<Expression, Time> t;
+         map<Expression, set<Expression> > pred;
+         return vector<ExpressionBlock>();
     }
 };
 
 class ForceDirectedSchedule : public Schedule {
   public:
-    virtual vector<ExpressionBlock> operator()(ExpressionBlock e) {
+    // resources: multiplier, adder/subtractor, logic/logical
+    int latency;
+    ForceDirectedSchedule(int latency) : latency(latency) {}
+
+    virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable) {
         vector<ExpressionBlock> scheduled_blocks;
+        // repeat {
+            // compute the time frames;
+                // timeframes are [ASAP, ALAP];
+            // compute the operations and type probabilities
+            // compute the self-forces, predecessor/successor forces and total forces;
+            // schedule the operation with least force and update its time-frame;
+        // } until (all operations scheduled);
         for (vector<Expression>::iterator it = e.begin();
             it != e.end(); ++it) {
             ExpressionBlock block;
@@ -599,8 +623,6 @@ class ForceDirectedSchedule : public Schedule {
         return scheduled_blocks;
     }
 };
-
-typedef map<string, Symbol> SymbolTable;
 
 class Program {
 public:
@@ -633,32 +655,40 @@ public:
                 os << "// NONE -> " << sym->first << ";\n";
             }
         }
+
+        state start = unique_state();
         os << "\nalways @(posedge Clk) begin\n";
         os << "    if (Rst == 1) begin\n";
-        os << "        State <= 0;\n";
+        os << "        State <= " << start << ";\n";
         for (SymbolTable::iterator sym = symbols.begin();
              sym != symbols.end(); ++sym) {
             if (sym->second.type == OUTPUT || sym->second.type == REG) {
                 os << "        " << sym->first << " <= 0;\n";
             }
         }
+
+        state first = unique_state();
         os << "    end else begin\n";
         os << "        case (State)\n";
-        os << "        " << unique_state() << ": begin\n";
+        os << "        // WAIT STATE\n";
+        os << "        " << start << ": begin\n";
         os << "            if (Start) begin\n";
-        os << "                State <= 1;\n";
+        os << "                State <= " << first << ";\n";
         os << "                Done <= 0;\n";
         os << "            end else begin\n";
-        os << "                State <= 0;\n";
+        os << "                State <= " << start << ";\n";
         os << "            end\n";
         os << "        end\n";
 
+        // Easier to schedule if the input and output variables are known, so
+        // pass symbol table to generate_fsm
         state end_state = unique_end_state();
-        statements->generate_fsm(os, schedule, unique_state(), end_state);
+        statements->generate_fsm(symbols, os, schedule, first, end_state);
 
+        os << "        // FINAL STATE\n";
         os << "        " << end_state << ": begin\n";
         os << "            Done <= 1;\n";
-        os << "            State <= 0;\n";
+        os << "            State <= " << start << ";\n";
         os << "        end\n";
         os << "        endcase\n";
         os << "    end\n";
@@ -885,11 +915,20 @@ class Parser {
 };
 
 int main(int argc, char** argv) {
-	if( argc != 4 ) {
+	if (argc != 4 && argc != 5) {
 		cerr << '\n' << "Usage: " << argv[0] <<
-            " -ns cfile verilogfile\n\n";
+            " -ns cfile verilogfile OR -fd cfile verilogfile latency\n\n";
 		return -1;
 	}
+
+    Schedule* schedule;
+    if (string(argv[1]) == "-ns") {
+        schedule = new NoSchedule();
+    } else if (string(argv[1]) == "-fd") {
+        // TODO add latency support!
+        schedule = new ForceDirectedSchedule(20);
+    }
+
     string verilog_name(argv[3]);
     fstream c_file(argv[2]);
     true_or_die(c_file.is_open(), "the c file could not be opened");
@@ -898,7 +937,6 @@ int main(int argc, char** argv) {
     Program program = p.program();
     c_file.close();
 
-    Schedule* schedule = new NoSchedule();
     program.generate_fsm(cout, schedule);
     delete schedule;
 
