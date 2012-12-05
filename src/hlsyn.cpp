@@ -17,6 +17,8 @@ using namespace std;
 class Symbol;
 typedef map<string, Symbol> SymbolTable;
 
+typedef int Time;
+
 bool DEBUG = false;
 
 typedef unsigned int state;
@@ -619,8 +621,6 @@ class NoSchedule : public Schedule {
         return scheduled_blocks;
     }
 };
-
-typedef int Time;
 
 class ASAPSchedule : public Schedule {
   public:
