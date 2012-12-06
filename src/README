@@ -1,0 +1,11 @@
+Names: Charles Leichner, Evan Briones
+Supported Statements: If, While, Do-While
+Scheduling: None, Force-Directed, ASAP, ALAP
+Commandline details:
+    None: -ns cfile verilogfile
+    Force-directed: -fd cfile verilogfile latency
+    ALAP: -al cfile verilogfile latency
+    ASAP: -as cfile verilogfile
+
+Known Defects: This program heavily relied on stack-allocation and occasionally
+chokes on large inputs

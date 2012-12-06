@@ -325,7 +325,7 @@ class ExpressionBlock;
 // Base policy for scheduling blocks of arithmatic expressions
 class Schedule {
   public:
-    virtual vector<ExpressionBlock> operator()(ExpressionBlock, SymbolTable) = 0;
+    virtual vector<ExpressionBlock> operator()(ExpressionBlock) = 0;
     virtual ~Schedule() {};
 };
 
@@ -342,7 +342,7 @@ class Statements {
         }
     }
 
-    virtual void generate_fsm(SymbolTable symbols, ostream& os, Schedule* schedule,
+    virtual void generate_fsm(ostream& os, Schedule* schedule,
                               state start,  state end) {
         state inner_start = start;
         state inner_end;
@@ -355,7 +355,7 @@ class Statements {
                 } else {
                     inner_end = unique_state();
                 }
-                (*it)->generate_fsm(symbols, os, schedule, inner_start, inner_end);
+                (*it)->generate_fsm(os, schedule, inner_start, inner_end);
                 inner_start = inner_end;
             }
         } else {
@@ -479,13 +479,13 @@ class ExpressionBlock : public Statements {
     vector<Expression>::reverse_iterator rend() {
         return expressions.rend();
     }
-    virtual void generate_fsm(SymbolTable symbols, ostream& os, Schedule* schedule,
+    virtual void generate_fsm(ostream& os, Schedule* schedule,
                               state start,  state end) {
         state inner_start = start;
         state inner_end;
 
         os << "\n        // STATEMENTS\n";
-        vector<ExpressionBlock> scheduled_blocks = (*schedule)(*this, symbols);
+        vector<ExpressionBlock> scheduled_blocks = (*schedule)(*this);
         for (vector<ExpressionBlock>::iterator block = scheduled_blocks.begin();
             block != scheduled_blocks.end(); ++block) {
             os << "        " << inner_start << ": begin\n";
@@ -538,7 +538,7 @@ class While : public Statements {
   public:
     Symbol condition; // contents of While is Statements::statements
 
-    virtual void generate_fsm(SymbolTable symbols, ostream& os, Schedule* schedule, state start, state end) {
+    virtual void generate_fsm(ostream& os, Schedule* schedule, state start, state end) {
         state inner_start = unique_state();
         state inner_end = unique_end_state();
 
@@ -551,7 +551,7 @@ class While : public Statements {
         os << "            end\n";
         os << "        end\n";
 
-        Statements::generate_fsm(symbols, os, schedule, inner_start, inner_end);
+        Statements::generate_fsm(os, schedule, inner_start, inner_end);
 
         os << "        " << inner_end << ": begin\n";
         os << "            State <= " << start << ";\n";
@@ -563,7 +563,7 @@ class Do : public Statements {
   public:
     Symbol condition; // contents of Do is Statements::statements
 
-    virtual void generate_fsm(SymbolTable symbols, ostream& os, Schedule* schedule, state start, state end) {
+    virtual void generate_fsm(ostream& os, Schedule* schedule, state start, state end) {
         state inner_start = unique_state();
         state inner_end = unique_end_state();
 
@@ -572,7 +572,7 @@ class Do : public Statements {
         os << "            State <= " << inner_start << ";\n";
         os << "        end\n";
 
-        Statements::generate_fsm(symbols, os, schedule, inner_start, inner_end);
+        Statements::generate_fsm(os, schedule, inner_start, inner_end);
 
         os << "        " << inner_end << ": begin\n";
         os << "            if (" << condition.name << ") begin\n";
@@ -588,7 +588,7 @@ class If : public Statements {
   public:
     Symbol condition; // contents of If is Statements::statements
 
-    virtual void generate_fsm(SymbolTable symbols, ostream& os, Schedule* schedule, state start, state end) {
+    virtual void generate_fsm(ostream& os, Schedule* schedule, state start, state end) {
         state inner_start = unique_state();
         state inner_end = unique_end_state();
 
@@ -601,7 +601,7 @@ class If : public Statements {
         os << "            end\n";
         os << "        end\n";
 
-        Statements::generate_fsm(symbols, os, schedule, inner_start, inner_end);
+        Statements::generate_fsm(os, schedule, inner_start, inner_end);
 
         os << "        " << inner_end << ": begin\n";
         os << "            State <= " << end << ";\n";
@@ -611,7 +611,7 @@ class If : public Statements {
 
 class NoSchedule : public Schedule {
   public:
-    virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable) {
+    virtual vector<ExpressionBlock> operator()(ExpressionBlock e) {
         vector<ExpressionBlock> scheduled_blocks;
         for (vector<Expression>::iterator it = e.begin();
             it != e.end(); ++it) {
@@ -714,7 +714,7 @@ class ASAPSchedule : public Schedule {
         return sequence;
     }
 
-    virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable) {
+    virtual vector<ExpressionBlock> operator()(ExpressionBlock e) {
         return sequence_to_expression_blocks(sequence(e));
     }
 };
@@ -745,12 +745,12 @@ map<Expression, set<Expression> > successors_from_expression_block(ExpressionBlo
 }
 
 vector<ExpressionBlock> latency_aware_sequence_to_expression_blocks(
-    Sequence sequence, Time latency) {
+    Sequence* sequence, Time latency) {
     vector<ExpressionBlock> scheduled_expressions;
     for (Time t = latency; t > 0; t--) {
         ExpressionBlock e;
-        for (Sequence::iterator it = sequence.begin();
-            it != sequence.end(); ++it) {
+        for (Sequence::iterator it = sequence->begin();
+            it != sequence->end(); ++it) {
             if (it->second == t) {
                 e.add_expression(it->first);
             }
@@ -812,8 +812,12 @@ class ALAPSchedule : public Schedule {
         return sequence;
     }
 
-    virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable) {
-        return latency_aware_sequence_to_expression_blocks(sequence(e), latency);
+    virtual vector<ExpressionBlock> operator()(ExpressionBlock e) {
+        Sequence* s = new Sequence(sequence(e));
+        vector<ExpressionBlock> eb =
+            latency_aware_sequence_to_expression_blocks(s, latency);
+        delete s;
+        return eb;
     }
 };
 
@@ -877,9 +881,9 @@ class ForceDirectedSchedule : public Schedule {
     }
 
     // computes all possible self-forces for an unscheduled node
-    vector<float> self_force(Expression exp, Time start, Time end,
-        map<Hardware, vector<float> > type_probabilities,
-        map<Expression, vector<float> > operation_probabilities) {
+    vector<float> self_force(const Expression& exp, Time start, Time end,
+        const map<Hardware, vector<float> >& type_probabilities,
+        const map<Expression, vector<float> >& operation_probabilities) {
         vector<float> force;
 
         for (Time t = 1; t < start; t++) {
@@ -895,18 +899,18 @@ class ForceDirectedSchedule : public Schedule {
         return force;
     }
 
-    bool all_scheduled(TimeFrames time_frames, Sequence sequence) {
-        for (TimeFrames::iterator tfs = time_frames.begin();
-            tfs != time_frames.end(); ++tfs) {
+    bool all_scheduled(TimeFrames *time_frames, Sequence* sequence) {
+        for (TimeFrames::iterator tfs = time_frames->begin();
+            tfs != time_frames->end(); ++tfs) {
             Expression exp = tfs->first;
-            if (sequence.find(exp) == sequence.end()) {
+            if (sequence->find(exp) == sequence->end()) {
                 return false;
             }
         }
         return true;
     }
 
-    virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable) {
+    virtual vector<ExpressionBlock> operator()(ExpressionBlock e) {
         // repeat {
             // compute the time frames; // timeframes are [ASAP, ALAP];
             // compute the operations and type probabilities
@@ -916,29 +920,31 @@ class ForceDirectedSchedule : public Schedule {
 
         // compute the time frames
         ALAPSchedule alap(latency);
-        Sequence alap_sequence = alap.sequence(e);
+        Sequence* alap_sequence = new Sequence(alap.sequence(e));
 
         ASAPSchedule asap;
-        Sequence asap_sequence = asap.sequence(e);
+        Sequence* asap_sequence = new Sequence(asap.sequence(e));
 
-        Sequence force_directed_sequence;
+        Sequence* force_directed_sequence = new Sequence;
 
-        TimeFrames time_frames;
-        for (Sequence::iterator alap_it = alap_sequence.begin();
-             alap_it != alap_sequence.end(); ++alap_it) {
+        TimeFrames* time_frames = new TimeFrames;
+        for (Sequence::iterator alap_it = alap_sequence->begin();
+             alap_it != alap_sequence->end(); ++alap_it) {
             Expression exp = alap_it->first;
             Time alap_time = alap_it->second;
-            Time asap_time = asap_sequence[exp];
-            time_frames[exp] = make_pair<Time, Time>(asap_time, alap_time);
+            Time asap_time = (*asap_sequence)[exp];
+            (*time_frames)[exp] = make_pair<Time, Time>(asap_time, alap_time);
         }
+        delete alap_sequence;
+        delete asap_sequence;
 
         while (!all_scheduled(time_frames, force_directed_sequence)) {
             // compute the operations probabilities
             // equal to 1/framewidth inside timeframe, 0 outside
             map<Expression, vector<float> > operation_probabilities;
             for (int t = 1; t <= latency; t++) {
-                for (TimeFrames::iterator tfs = time_frames.begin();
-                    tfs != time_frames.end(); ++tfs) {
+                for (TimeFrames::iterator tfs = time_frames->begin();
+                    tfs != time_frames->end(); ++tfs) {
                     Expression exp = tfs->first;
                     Time start = tfs->second.first;
                     Time end = tfs->second.second;
@@ -991,8 +997,8 @@ class ForceDirectedSchedule : public Schedule {
             map<Expression, vector<float> > forces;
             // type_probabilities
             // operation_probabilities
-            for (TimeFrames::iterator tfs = time_frames.begin();
-                tfs != time_frames.end(); ++tfs) {
+            for (TimeFrames::iterator tfs = time_frames->begin();
+                tfs != time_frames->end(); ++tfs) {
                 Expression exp = tfs->first;
                 Time start = tfs->second.first;
                 Time end = tfs->second.second;
@@ -1006,15 +1012,15 @@ class ForceDirectedSchedule : public Schedule {
 
             // predecessor forces
             map<Expression, set<Expression> > predecessors = predecessors_from_expression_block(e);
-            for (TimeFrames::iterator tfs = time_frames.begin();
-                tfs != time_frames.end(); ++tfs) {
+            for (TimeFrames::iterator tfs = time_frames->begin();
+                tfs != time_frames->end(); ++tfs) {
                 Expression exp = tfs->first;
                 Time start = tfs->second.first;
                 Time end = tfs->second.second;
                 for (Time t = start; t <= end; t++) {
                     for (set<Expression>::iterator pred = predecessors[exp].begin(); pred !=
                         predecessors[exp].end(); ++pred) {
-                        Time pred_start = time_frames[*pred].first;
+                        Time pred_start = (*time_frames)[*pred].first;
                         Time pred_end = start - 1;
                         forces[exp][t] += single_self_force(*pred, t, pred_start, pred_end,
                                 type_probabilities, operation_probabilities);
@@ -1025,8 +1031,8 @@ class ForceDirectedSchedule : public Schedule {
             // successor forces
             map<Expression, set<Expression> > successors =
                 successors_from_expression_block(e);
-            for (TimeFrames::iterator tfs = time_frames.begin();
-                tfs != time_frames.end(); ++tfs) {
+            for (TimeFrames::iterator tfs = time_frames->begin();
+                tfs != time_frames->end(); ++tfs) {
                 Expression exp = tfs->first;
                 Time start = tfs->second.first;
                 Time end = tfs->second.second;
@@ -1034,7 +1040,7 @@ class ForceDirectedSchedule : public Schedule {
                     for (set<Expression>::iterator succ = successors[exp].begin(); succ !=
                         successors[exp].end(); ++succ) {
                         Time succ_start = end + 1;
-                        Time succ_end = time_frames[*succ].second;
+                        Time succ_end = (*time_frames)[*succ].second;
                         forces[exp][t] += single_self_force(*succ, t, succ_start, succ_end,
                                 type_probabilities, operation_probabilities);
                     }
@@ -1049,10 +1055,10 @@ class ForceDirectedSchedule : public Schedule {
                 it != forces.end(); ++it) {
                 Expression exp = it->first;
                 vector<float> force = it->second;
-                for (Time t = time_frames[exp].first; t <= time_frames[exp].second; ++t) {
+                for (Time t = (*time_frames)[exp].first; t <= (*time_frames)[exp].second; ++t) {
                     if (force[t] < min_force &&
-                        force_directed_sequence.find(exp)
-                        == force_directed_sequence.end()) {
+                        force_directed_sequence->find(exp)
+                        == force_directed_sequence->end()) {
                         min_force = force[t];
                         to_schedule = exp;
                         scheduled_time = t;
@@ -1061,38 +1067,42 @@ class ForceDirectedSchedule : public Schedule {
             }
 
             // lock down the time frame
-            time_frames[to_schedule] = make_pair<Time, Time>(scheduled_time, scheduled_time);
+            (*time_frames)[to_schedule] = make_pair<Time, Time>(scheduled_time, scheduled_time);
 
             // update predecessors and successors
             for (set<Expression>::iterator pred = predecessors[to_schedule].begin(); pred !=
                 predecessors[to_schedule].end(); ++pred) {
-                time_frames[*pred].second = scheduled_time - 1;
+                (*time_frames)[*pred].second = scheduled_time - 1;
             }
             for (set<Expression>::iterator succ = successors[to_schedule].begin(); succ !=
                     successors[to_schedule].end(); ++succ) {
-                time_frames[*succ].first = scheduled_time + 1;
+               (*time_frames)[*succ].first = scheduled_time + 1;
             }
 
             // schedule everything with a frame width of one (only one place to schedule)
-            for (TimeFrames::iterator tfs = time_frames.begin();
-                tfs != time_frames.end(); ++tfs) {
+            for (TimeFrames::iterator tfs = (*time_frames).begin();
+                tfs != (*time_frames).end(); ++tfs) {
                 Expression exp = tfs->first;
                 Time start = tfs->second.first;
                 Time end = tfs->second.second;
                 if (start == end) {
-                    force_directed_sequence[exp] = start;
+                    (*force_directed_sequence)[exp] = start;
                 }
             }
         }
 
-        return latency_aware_sequence_to_expression_blocks(
+        delete time_frames;
+
+        vector<ExpressionBlock> scheduled_blocks = latency_aware_sequence_to_expression_blocks(
             force_directed_sequence, latency);
+        delete force_directed_sequence;
+        return scheduled_blocks;
     }
 };
 
 class Program {
 public:
-    Program(SymbolTable symbols, Statements* statements) :
+    Program(SymbolTable& symbols, Statements* statements) :
         symbols(symbols),
         statements(statements) {}
 
@@ -1149,7 +1159,7 @@ public:
         // Easier to schedule if the input and output variables are known, so
         // pass symbol table to generate_fsm
         state end_state = unique_end_state();
-        statements->generate_fsm(symbols, os, schedule, first, end_state);
+        statements->generate_fsm(os, schedule, first, end_state);
 
         os << "        // FINAL STATE\n";
         os << "        " << end_state << ": begin\n";
@@ -1392,22 +1402,18 @@ int main(int argc, char** argv) {
     }
 
     Schedule* schedule;
-    if (string(argv[1]) == "-ns") {
+    if (argc == 4 && string(argv[1]) == "-ns") {
         schedule = new NoSchedule();
+    } else if (argc == 4 && string(argv[1]) == "-as") {
+        schedule = new ASAPSchedule();
+    } else if (argc == 5 && string(argv[1]) == "-al") {
+        schedule = new ALAPSchedule(atoi(argv[4]));
     } else if (argc == 5 && string(argv[1]) == "-fd") {
-        // TODO make this actually check things
         schedule = new ForceDirectedSchedule(atoi(argv[4]));
     } else {
         usage(argv);
     }
 
-    /*
-    delete schedule;
-    schedule = new ASAPSchedule();
-    schedule = new ALAPSchedule(6);
-    */
-
-    string verilog_name(argv[3]);
     fstream c_file(argv[2]);
     true_or_die(c_file.is_open(), "the c file could not be opened");
 
@@ -1415,7 +1421,10 @@ int main(int argc, char** argv) {
     Program program = p.program();
     c_file.close();
 
-    program.generate_fsm(cout, schedule);
+    ofstream verilog_file(argv[3]);
+    true_or_die(verilog_file.is_open(),
+        "the verilog file could not be opened");
+    program.generate_fsm(verilog_file, schedule);
     delete schedule;
 
     return 0;
