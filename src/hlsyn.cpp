@@ -12,6 +12,7 @@
 #include <sstream>
 #include <vector>
 #include <climits>
+#include <cfloat>
 using namespace std;
 
 class Symbol;
@@ -622,37 +623,41 @@ class NoSchedule : public Schedule {
     }
 };
 
-class ASAPSchedule : public Schedule {
-  public:
-    map<Expression, set<Expression> > predecessors_from_expression_block(ExpressionBlock e) {
-         map<Expression, set<Expression> > pred;
-         for (vector<Expression>::reverse_iterator expression = e.rbegin();
-              expression != e.rend(); ++expression) {
-            pred[*expression] = set<Expression>();
-            for (vector<Symbol>::iterator arg = expression->arguments.begin();
-                 arg != expression->arguments.end(); ++arg) {
-                true_or_die(expression->result.name != arg->name,
-                            "self-reference in expression!");
-                for (vector<Expression>::reverse_iterator dep = expression;
-                    dep != e.rend(); ++dep) {
-                    if (arg->name == dep->result.name) {
-                        pred[*expression].insert(*dep);
-                    }
+
+typedef map<Expression, Time> Sequence;
+
+map<Expression, set<Expression> > predecessors_from_expression_block(ExpressionBlock e) {
+    map<Expression, set<Expression> > pred;
+    for (vector<Expression>::reverse_iterator expression = e.rbegin();
+        expression != e.rend(); ++expression) {
+        pred[*expression] = set<Expression>();
+        for (vector<Symbol>::iterator arg = expression->arguments.begin();
+            arg != expression->arguments.end(); ++arg) {
+            true_or_die(expression->result.name != arg->name,
+                        "self-reference in expression!");
+            for (vector<Expression>::reverse_iterator dep = expression;
+                dep != e.rend(); ++dep) {
+                if (arg->name == dep->result.name) {
+                    pred[*expression].insert(*dep);
                 }
             }
-         }
-         return pred;
+        }
     }
+    return pred;
+}
+
+class ASAPSchedule : public Schedule {
+  public:
 
     vector<ExpressionBlock> sequence_to_expression_blocks(
-        map<Expression, Time> sequence) {
+        Sequence sequence) {
         bool still_adding = true;
         vector<ExpressionBlock> scheduled_expressions;
         Time t = 1;
         while (still_adding) {
             still_adding = false;
             ExpressionBlock e;
-            for (map<Expression, Time>::iterator it = sequence.begin();
+            for (Sequence::iterator it = sequence.begin();
                 it != sequence.end(); ++it) {
                 if (it->second == t) {
                     e.add_expression(it->first);
@@ -667,13 +672,13 @@ class ASAPSchedule : public Schedule {
         return scheduled_expressions;
     }
 
-    virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable) {
+    Sequence sequence(ExpressionBlock e) {
         // Make predecessor table
         map<Expression, set<Expression> > pred =
             predecessors_from_expression_block(e);
 
         // maps expressions to the time they are scheduled in
-        map<Expression, Time> sequence;
+        Sequence sequence;
 
         bool all_scheduled = false;
         while (!all_scheduled) {
@@ -706,65 +711,69 @@ class ASAPSchedule : public Schedule {
                 }
             }
         }
+        return sequence;
+    }
 
-        return sequence_to_expression_blocks(sequence);
+    virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable) {
+        return sequence_to_expression_blocks(sequence(e));
     }
 };
+
+map<Expression, set<Expression> > successors_from_expression_block(ExpressionBlock e) {
+    map<Expression, set<Expression> > succ;
+    for (vector<Expression>::iterator expression = e.begin();
+        expression != e.end(); ++expression) {
+        succ[*expression] = set<Expression>();
+        for (vector<Expression>::iterator dep = expression + 1;
+            dep != e.end(); ++dep) {
+
+            // the result of this expression got assigned to again, no more
+            // successors for this expression
+            if (expression->result.name == dep->result.name) {
+                break;
+            }
+
+            for (vector<Symbol>::iterator arg = dep->arguments.begin();
+                arg != dep->arguments.end(); ++arg) {
+                if (expression->result.name == arg->name) {
+                    succ[*expression].insert(*dep);
+                }
+            }
+        }
+    }
+    return succ;
+}
+
+vector<ExpressionBlock> latency_aware_sequence_to_expression_blocks(
+    Sequence sequence, Time latency) {
+    vector<ExpressionBlock> scheduled_expressions;
+    for (Time t = latency; t > 0; t--) {
+        ExpressionBlock e;
+        for (Sequence::iterator it = sequence.begin();
+            it != sequence.end(); ++it) {
+            if (it->second == t) {
+                e.add_expression(it->first);
+            }
+        }
+        scheduled_expressions.push_back(e);
+    }
+    return vector<ExpressionBlock>(scheduled_expressions.rbegin(),
+                                scheduled_expressions.rend());
+}
 
 class ALAPSchedule : public Schedule {
   public:
     Time latency;
     ALAPSchedule(Time latency) : latency(latency) {}
 
-    map<Expression, set<Expression> > successors_from_expression_block(ExpressionBlock e) {
-         map<Expression, set<Expression> > succ;
-         for (vector<Expression>::iterator expression = e.begin();
-              expression != e.end(); ++expression) {
-            succ[*expression] = set<Expression>();
-            for (vector<Expression>::iterator dep = expression + 1;
-                dep != e.end(); ++dep) {
-
-                // the result of this expression got assigned to again, no more
-                // successors for this expression
-                if (expression->result.name == dep->result.name) {
-                    break;
-                }
-
-                for (vector<Symbol>::iterator arg = dep->arguments.begin();
-                     arg != dep->arguments.end(); ++arg) {
-                    if (expression->result.name == arg->name) {
-                        succ[*expression].insert(*dep);
-                    }
-                }
-            }
-         }
-         return succ;
-    }
-
     // DIFFERENT FROM THE ONE THAT ASAP USES, LATENCY AWARE!
-    vector<ExpressionBlock> sequence_to_expression_blocks(
-        map<Expression, Time> sequence) {
-        vector<ExpressionBlock> scheduled_expressions;
-        for (Time t = latency; t > 0; t--) {
-            ExpressionBlock e;
-            for (map<Expression, Time>::iterator it = sequence.begin();
-                it != sequence.end(); ++it) {
-                if (it->second == t) {
-                    e.add_expression(it->first);
-                }
-            }
-            scheduled_expressions.push_back(e);
-        }
-        return vector<ExpressionBlock>(scheduled_expressions.rbegin(),
-                                       scheduled_expressions.rend());
-    }
 
-    virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable) {
+    Sequence sequence(ExpressionBlock e) {
         map<Expression, set<Expression> > succ =
             successors_from_expression_block(e);
 
         // maps expressions to the time they are scheduled in
-        map<Expression, Time> sequence;
+        Sequence sequence;
 
         bool all_scheduled = false;
         while (!all_scheduled) {
@@ -800,10 +809,43 @@ class ALAPSchedule : public Schedule {
                 }
             }
         }
+        return sequence;
+    }
 
-        return sequence_to_expression_blocks(sequence);
+    virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable) {
+        return latency_aware_sequence_to_expression_blocks(sequence(e), latency);
     }
 };
+
+typedef map<Expression, pair<Time, Time> > TimeFrames;
+typedef enum {
+    ERROR,
+    MULTIPLIER,
+    ADDER,
+    LOGICAL,
+} Hardware;
+
+Hardware op_to_hw(TokenType t) {
+    switch (t) {
+        case ASSIGN:
+        case LT:
+        case GT:
+        case EQ:
+        case QMARK:
+        case L_SHIFT:
+        case R_SHIFT:
+            return LOGICAL;
+        case MULT:
+            return MULTIPLIER;
+        case PLUS:
+        case MINUS:
+            return ADDER;
+        default:
+            true_or_die(false,
+            "unknown operator in op_to_hardware");
+    }
+    return ERROR;
+}
 
 // Minimum resource under latency constraint
 class ForceDirectedSchedule : public Schedule {
@@ -812,21 +854,239 @@ class ForceDirectedSchedule : public Schedule {
     Time latency;
     ForceDirectedSchedule(Time latency) : latency(latency) {}
 
+    // computes the self-force implicit in a particular scheduling decision
+    float single_self_force(Expression exp, Time pt, Time start, Time end,
+        map<Hardware, vector<float> > type_probabilities,
+        map<Expression, vector<float> > operation_probabilities) {
+        Hardware hw = op_to_hw(exp.op);
+        float force = 0;
+        for (Time t = start; t < end; t++) {
+            float prob;
+            if (pt == t) {
+                prob = 1;
+            } else {
+                prob = 0;
+            }
+
+            // force[i] = distribution graph [i] * change in current
+            // operations probability
+            force += type_probabilities[hw][t] *
+                        (prob - operation_probabilities[exp][t]);
+        }
+        return force;
+    }
+
+    // computes all possible self-forces for an unscheduled node
+    vector<float> self_force(Expression exp, Time start, Time end,
+        map<Hardware, vector<float> > type_probabilities,
+        map<Expression, vector<float> > operation_probabilities) {
+        vector<float> force;
+
+        for (Time t = 1; t < start; t++) {
+           force.push_back(FLT_MAX);
+        }
+
+        // pt -> possible time
+        for (Time pt = start; pt <= end; pt++) {
+            force.push_back(single_self_force(exp, pt, start, end,
+                     type_probabilities, operation_probabilities));
+        }
+
+        return force;
+    }
+
+    bool all_scheduled(TimeFrames time_frames, Sequence sequence) {
+        for (TimeFrames::iterator tfs = time_frames.begin();
+            tfs != time_frames.end(); ++tfs) {
+            Expression exp = tfs->first;
+            if (sequence.find(exp) == sequence.end()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     virtual vector<ExpressionBlock> operator()(ExpressionBlock e, SymbolTable) {
-        vector<ExpressionBlock> scheduled_blocks;
         // repeat {
             // compute the time frames; // timeframes are [ASAP, ALAP];
             // compute the operations and type probabilities
             // compute the self-forces, predecessor/successor forces and total forces;
             // schedule the operation with least force and update its time-frame;
         // } until (all operations scheduled);
-        for (vector<Expression>::iterator it = e.begin();
-            it != e.end(); ++it) {
-            ExpressionBlock block;
-            block.add_expression(*it);
-            scheduled_blocks.push_back(block);
+
+        // compute the time frames
+        ALAPSchedule alap(latency);
+        Sequence alap_sequence = alap.sequence(e);
+
+        ASAPSchedule asap;
+        Sequence asap_sequence = asap.sequence(e);
+
+        Sequence force_directed_sequence;
+
+        TimeFrames time_frames;
+        for (Sequence::iterator alap_it = alap_sequence.begin();
+             alap_it != alap_sequence.end(); ++alap_it) {
+            Expression exp = alap_it->first;
+            Time alap_time = alap_it->second;
+            Time asap_time = asap_sequence[exp];
+            time_frames[exp] = make_pair<Time, Time>(asap_time, alap_time);
         }
-        return scheduled_blocks;
+
+        while (!all_scheduled(time_frames, force_directed_sequence)) {
+            // compute the operations probabilities
+            // equal to 1/framewidth inside timeframe, 0 outside
+            map<Expression, vector<float> > operation_probabilities;
+            for (int t = 1; t <= latency; t++) {
+                for (TimeFrames::iterator tfs = time_frames.begin();
+                    tfs != time_frames.end(); ++tfs) {
+                    Expression exp = tfs->first;
+                    Time start = tfs->second.first;
+                    Time end = tfs->second.second;
+
+                    if (operation_probabilities.find(exp)
+                        == operation_probabilities.end()) {
+                        operation_probabilities[exp] = vector<float>();
+                    }
+
+                    if (t >= start && t <= end) {
+                        operation_probabilities[exp].push_back(1/(end - start + 1.0f));
+                    } else {
+                        operation_probabilities[exp].push_back(0);
+                    }
+                }
+            }
+
+            // compute the type probabilities (distribution graph for each type)
+            map<Hardware, vector<float> > type_probabilities;
+            for (int t = 1; t <= latency; t++) {
+
+                // calculate all type probabilities at a given time
+                map<Hardware, float> prob_t;
+                for (map<Expression, vector<float> >::iterator op_prob =
+                    operation_probabilities.begin(); op_prob !=
+                    operation_probabilities.end(); ++op_prob) {
+                    Expression exp = op_prob->first;
+                    Hardware hw = op_to_hw(exp.op);
+                    if (prob_t.find(hw) == prob_t.end()) {
+                        prob_t[hw] = 0;
+                    }
+                    prob_t[hw] += operation_probabilities[exp][t];
+                }
+
+                // append the calculated type probabilities to the list of all
+                // times
+                for (map<Hardware, float>::iterator prob = prob_t.begin();
+                    prob != prob_t.end(); ++prob) {
+                    if (type_probabilities.find(prob->first)
+                        == type_probabilities.end()) {
+                        type_probabilities[prob->first] = vector<float>();
+                    }
+
+                    type_probabilities[prob->first].push_back(prob->second);
+                }
+            }
+
+            // compute the self-forces, predecessors/successor forces and total forces
+            // compute self-forces
+            map<Expression, vector<float> > forces;
+            // type_probabilities
+            // operation_probabilities
+            for (TimeFrames::iterator tfs = time_frames.begin();
+                tfs != time_frames.end(); ++tfs) {
+                Expression exp = tfs->first;
+                Time start = tfs->second.first;
+                Time end = tfs->second.second;
+                forces[exp] = self_force(exp, start, end,
+                        type_probabilities, operation_probabilities);
+            }
+
+            // lookup predecessor time frames and check if scheduling this
+            // operation at some time will force a predecessor to be scheduled at
+            // a particular time (shrinks the timeframe to one value)
+
+            // predecessor forces
+            map<Expression, set<Expression> > predecessors = predecessors_from_expression_block(e);
+            for (TimeFrames::iterator tfs = time_frames.begin();
+                tfs != time_frames.end(); ++tfs) {
+                Expression exp = tfs->first;
+                Time start = tfs->second.first;
+                Time end = tfs->second.second;
+                for (Time t = start; t <= end; t++) {
+                    for (set<Expression>::iterator pred = predecessors[exp].begin(); pred !=
+                        predecessors[exp].end(); ++pred) {
+                        Time pred_start = time_frames[*pred].first;
+                        Time pred_end = start - 1;
+                        forces[exp][t] += single_self_force(*pred, t, pred_start, pred_end,
+                                type_probabilities, operation_probabilities);
+                    }
+                }
+            }
+
+            // successor forces
+            map<Expression, set<Expression> > successors =
+                successors_from_expression_block(e);
+            for (TimeFrames::iterator tfs = time_frames.begin();
+                tfs != time_frames.end(); ++tfs) {
+                Expression exp = tfs->first;
+                Time start = tfs->second.first;
+                Time end = tfs->second.second;
+                for (Time t = start; t <= end; t++) {
+                    for (set<Expression>::iterator succ = successors[exp].begin(); succ !=
+                        successors[exp].end(); ++succ) {
+                        Time succ_start = end + 1;
+                        Time succ_end = time_frames[*succ].second;
+                        forces[exp][t] += single_self_force(*succ, t, succ_start, succ_end,
+                                type_probabilities, operation_probabilities);
+                    }
+                }
+            }
+
+            // schedule the operation with least force and update its time-frame
+            float min_force = FLT_MAX;
+            Expression to_schedule;
+            Time scheduled_time;
+            for (map<Expression, vector<float> >::iterator it = forces.begin();
+                it != forces.end(); ++it) {
+                Expression exp = it->first;
+                vector<float> force = it->second;
+                for (Time t = time_frames[exp].first; t <= time_frames[exp].second; ++t) {
+                    if (force[t] < min_force &&
+                        force_directed_sequence.find(exp)
+                        == force_directed_sequence.end()) {
+                        min_force = force[t];
+                        to_schedule = exp;
+                        scheduled_time = t;
+                    }
+                }
+            }
+
+            // lock down the time frame
+            time_frames[to_schedule] = make_pair<Time, Time>(scheduled_time, scheduled_time);
+
+            // update predecessors and successors
+            for (set<Expression>::iterator pred = predecessors[to_schedule].begin(); pred !=
+                predecessors[to_schedule].end(); ++pred) {
+                time_frames[*pred].second = scheduled_time - 1;
+            }
+            for (set<Expression>::iterator succ = successors[to_schedule].begin(); succ !=
+                    successors[to_schedule].end(); ++succ) {
+                time_frames[*succ].first = scheduled_time + 1;
+            }
+
+            // schedule everything with a frame width of one (only one place to schedule)
+            for (TimeFrames::iterator tfs = time_frames.begin();
+                tfs != time_frames.end(); ++tfs) {
+                Expression exp = tfs->first;
+                Time start = tfs->second.first;
+                Time end = tfs->second.second;
+                if (start == end) {
+                    force_directed_sequence[exp] = start;
+                }
+            }
+        }
+
+        return latency_aware_sequence_to_expression_blocks(
+            force_directed_sequence, latency);
     }
 };
 
@@ -1120,23 +1380,32 @@ class Parser {
     SymbolTable s;
 };
 
+void usage(char** argv) {
+    cerr << '\n' << "Usage: " << argv[0] <<
+        " -ns cfile verilogfile OR -fd cfile verilogfile latency\n\n";
+    exit(-1);
+}
+
 int main(int argc, char** argv) {
     if (argc != 4 && argc != 5) {
-        cerr << '\n' << "Usage: " << argv[0] <<
-            " -ns cfile verilogfile OR -fd cfile verilogfile latency\n\n";
-        return -1;
+        usage(argv);
     }
 
     Schedule* schedule;
     if (string(argv[1]) == "-ns") {
         schedule = new NoSchedule();
-    } else if (string(argv[1]) == "-fd") {
-        // TODO add latency support!
-        schedule = new ForceDirectedSchedule(20);
+    } else if (argc == 5 && string(argv[1]) == "-fd") {
+        // TODO make this actually check things
+        schedule = new ForceDirectedSchedule(atoi(argv[4]));
+    } else {
+        usage(argv);
     }
+
+    /*
     delete schedule;
-    //schedule = new ASAPSchedule();
+    schedule = new ASAPSchedule();
     schedule = new ALAPSchedule(6);
+    */
 
     string verilog_name(argv[3]);
     fstream c_file(argv[2]);
